@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { horizonService } from "./horizon.js";
 const jobs = new Map();
 const reputations = new Map();
 function assertJobState(job, expected) {
@@ -18,7 +19,7 @@ function updateReputation(artisan, amount, success) {
         artisan,
         completed: 0,
         disputed: 0,
-        totalEarned: "0"
+        totalEarned: "0",
     };
     if (success) {
         current.completed += 1;
@@ -49,7 +50,7 @@ export const jobService = {
             disputeAt: null,
             jobHash: input.jobHash,
             trade: input.trade,
-            description: input.description
+            description: input.description,
         };
         jobs.set(jobId, job);
         return job;
@@ -64,7 +65,7 @@ export const jobService = {
         jobs.set(jobId, job);
         return job;
     },
-    confirmDone(jobId, customer) {
+    async confirmDone(jobId, customer, idempotencyKey) {
         const job = getExistingJob(jobId);
         assertJobState(job, "Active");
         if (job.customer !== customer) {
@@ -73,7 +74,8 @@ export const jobService = {
         job.state = "Completed";
         jobs.set(jobId, job);
         updateReputation(job.artisan, job.amount, true);
-        return job;
+        const { event } = await horizonService.processJobCompletionPayout(job, idempotencyKey);
+        return { job, settlementEvent: event };
     },
     raiseDispute(jobId, customer) {
         const job = getExistingJob(jobId);
@@ -86,7 +88,7 @@ export const jobService = {
         jobs.set(jobId, job);
         return job;
     },
-    resolveDispute(jobId, favour) {
+    async resolveDispute(jobId, favour, idempotencyKey) {
         const job = getExistingJob(jobId);
         assertJobState(job, "Disputed");
         if (favour === "artisan") {
@@ -98,14 +100,19 @@ export const jobService = {
             updateReputation(job.artisan, "0", false);
         }
         jobs.set(jobId, job);
-        return job;
+        let settlementEvent;
+        if (favour === "customer") {
+            const result = await horizonService.processDisputeRefund(job, idempotencyKey);
+            settlementEvent = result.event;
+        }
+        return { job, settlementEvent };
     },
     getReputation(artisan) {
         return (reputations.get(artisan) ?? {
             artisan,
             completed: 0,
             disputed: 0,
-            totalEarned: "0"
+            totalEarned: "0",
         });
-    }
+    },
 };

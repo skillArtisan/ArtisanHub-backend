@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { JobRecord, JobState, Reputation, ResolveFavour } from "../types.js";
+import type {
+  JobRecord,
+  JobState,
+  Reputation,
+  ResolveFavour,
+} from "../types.js";
+import { horizonService } from "./horizon.js";
 
 type CreateJobInput = {
   customer: string;
@@ -33,12 +39,14 @@ function updateReputation(artisan: string, amount: string, success: boolean) {
     artisan,
     completed: 0,
     disputed: 0,
-    totalEarned: "0"
+    totalEarned: "0",
   };
 
   if (success) {
     current.completed += 1;
-    current.totalEarned = (BigInt(current.totalEarned) + BigInt(amount)).toString();
+    current.totalEarned = (
+      BigInt(current.totalEarned) + BigInt(amount)
+    ).toString();
   } else {
     current.disputed += 1;
   }
@@ -49,7 +57,9 @@ function updateReputation(artisan: string, amount: string, success: boolean) {
 
 export const jobService = {
   listJobs() {
-    return Array.from(jobs.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return Array.from(jobs.values()).sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
   },
 
   getJob(jobId: string) {
@@ -68,7 +78,7 @@ export const jobService = {
       disputeAt: null,
       jobHash: input.jobHash,
       trade: input.trade,
-      description: input.description
+      description: input.description,
     };
 
     jobs.set(jobId, job);
@@ -88,7 +98,7 @@ export const jobService = {
     return job;
   },
 
-  confirmDone(jobId: string, customer: string) {
+  async confirmDone(jobId: string, customer: string, idempotencyKey?: string) {
     const job = getExistingJob(jobId);
     assertJobState(job, "Active");
 
@@ -99,7 +109,13 @@ export const jobService = {
     job.state = "Completed";
     jobs.set(jobId, job);
     updateReputation(job.artisan, job.amount, true);
-    return job;
+
+    const { event } = await horizonService.processJobCompletionPayout(
+      job,
+      idempotencyKey,
+    );
+
+    return { job, settlementEvent: event };
   },
 
   raiseDispute(jobId: string, customer: string) {
@@ -116,7 +132,11 @@ export const jobService = {
     return job;
   },
 
-  resolveDispute(jobId: string, favour: ResolveFavour) {
+  async resolveDispute(
+    jobId: string,
+    favour: ResolveFavour,
+    idempotencyKey?: string,
+  ) {
     const job = getExistingJob(jobId);
     assertJobState(job, "Disputed");
 
@@ -129,7 +149,17 @@ export const jobService = {
     }
 
     jobs.set(jobId, job);
-    return job;
+
+    let settlementEvent;
+    if (favour === "customer") {
+      const result = await horizonService.processDisputeRefund(
+        job,
+        idempotencyKey,
+      );
+      settlementEvent = result.event;
+    }
+
+    return { job, settlementEvent };
   },
 
   getReputation(artisan: string) {
@@ -138,8 +168,8 @@ export const jobService = {
         artisan,
         completed: 0,
         disputed: 0,
-        totalEarned: "0"
+        totalEarned: "0",
       }
     );
-  }
+  },
 };

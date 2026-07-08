@@ -2,21 +2,28 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { config } from "./config.js";
 import { registerJobRoutes } from "./routes/jobs.js";
+import { securityHeaders } from "./middleware/securityHeaders.js";
+import { requestLogger } from "./middleware/requestLogger.js";
+import { createRateLimiter } from "./middleware/rateLimiter.js";
 
 export async function buildServer() {
   const app = Fastify({
-    logger: true
+    logger: true,
   });
 
   await app.register(cors, {
-    origin: config.corsOrigin
+    origin: config.corsOrigin,
   });
+
+  // Global middleware
+  app.addHook("onRequest", securityHeaders);
+  app.addHook("onRequest", requestLogger());
 
   app.get("/health", async () => {
     return {
       ok: true,
       service: "owowork-backend",
-      network: config.soroban.network
+      network: config.soroban.network,
     };
   });
 
@@ -30,7 +37,7 @@ const app = await buildServer();
 try {
   await app.listen({
     port: config.port,
-    host: config.host
+    host: config.host,
   });
 } catch (error) {
   app.log.error(error);

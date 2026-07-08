@@ -2,6 +2,19 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { jobService } from "../services/jobs.js";
 import { sorobanService } from "../services/soroban.js";
+import { config } from "../config.js";
+import {
+  validateStellarPublicKey,
+  validateContractId,
+  validateAmount,
+  sanitizeText,
+  ValidationError,
+} from "../utils/validation.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FastifyRequest = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FastifyReply = any;
 
 const createJobSchema = z.object({
   customer: z.string().min(1),
@@ -9,23 +22,41 @@ const createJobSchema = z.object({
   amount: z.string().regex(/^\d+$/, "amount must be a stroop integer string"),
   jobHash: z.string().min(8),
   trade: z.string().min(1).max(32),
-  description: z.string().max(1000).optional()
+  description: z.string().max(1000).optional(),
 });
 
 const actorSchema = z.object({
-  actor: z.string().min(1)
+  actor: z.string().min(1),
 });
 
 const resolveSchema = z.object({
   mediator: z.string().min(1),
-  favour: z.enum(["artisan", "customer"])
+  favour: z.enum(["artisan", "customer"]),
 });
 
-function toErrorResponse(error: unknown) {
-  if (error instanceof z.ZodError) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toErrorResponse(error: any): {
+  statusCode: number;
+  body: Record<string, any>;
+} {
+  if (error && error.constructor && error.constructor.name === "ZodError") {
     return {
       statusCode: 400,
-      body: { error: "validation failed", issues: error.flatten() }
+      body: {
+        error: "validation failed",
+        issues: error.flatten(),
+      },
+    };
+  }
+
+  if (error instanceof ValidationError) {
+    return {
+      statusCode: 400,
+      body: {
+        error: error.message,
+        field: error.field,
+        code: error.code,
+      },
     };
   }
 
@@ -39,92 +70,147 @@ export async function registerJobRoutes(app: FastifyInstance) {
     return { jobs: jobService.listJobs() };
   });
 
-  app.get("/api/jobs/:jobId", async (request, reply) => {
-    try {
-      const { jobId } = request.params as { jobId: string };
-      return { job: jobService.getJob(jobId) };
-    } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
-    }
-  });
+  app.get(
+    "/api/jobs/:jobId",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { jobId } = request.params as { jobId: string };
+        return { job: jobService.getJob(jobId) };
+      } catch (error) {
+        const response = toErrorResponse(error);
+        return reply.code(response.statusCode).send(response.body);
+      }
+    },
+  );
 
-  app.post("/api/jobs", async (request, reply) => {
-    try {
-      const payload = createJobSchema.parse(request.body);
-      const job = jobService.createJob(payload);
+  app.post(
+    "/api/jobs",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const payload = createJobSchema.parse(request.body);
 
-      return reply.code(201).send({
-        job,
-        contract: sorobanService.createJob(job)
-      });
-    } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
-    }
-  });
+        // Validate Stellar public keys
+        validateStellarPublicKey(payload.customer, "customer");
+        validateStellarPublicKey(payload.artisan, "artisan");
 
-  app.post("/api/jobs/:jobId/accept", async (request, reply) => {
-    try {
-      const { jobId } = request.params as { jobId: string };
-      const { actor } = actorSchema.parse(request.body);
-      const job = jobService.acceptJob(jobId, actor);
+        // Validate amount
+        validateAmount(payload.amount, "amount");
 
-      return {
-        job,
-        contract: sorobanService.acceptJob(jobId, actor)
-      };
-    } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
-    }
-  });
+        // Validate contract ID if configured
+        if (config.soroban.contractId) {
+          validateContractId(config.soroban.contractId, "contractId");
+        }
 
-  app.post("/api/jobs/:jobId/confirm", async (request, reply) => {
-    try {
-      const { jobId } = request.params as { jobId: string };
-      const { actor } = actorSchema.parse(request.body);
-      const job = jobService.confirmDone(jobId, actor);
+        // Sanitize description
+        const sanitizedPayload = {
+          ...payload,
+          description: payload.description
+            ? sanitizeText(payload.description, 1000)
+            : undefined,
+        };
 
-      return {
-        job,
-        contract: sorobanService.confirmDone(jobId, actor)
-      };
-    } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
-    }
-  });
+        const job = jobService.createJob(sanitizedPayload);
 
-  app.post("/api/jobs/:jobId/dispute", async (request, reply) => {
-    try {
-      const { jobId } = request.params as { jobId: string };
-      const { actor } = actorSchema.parse(request.body);
-      const job = jobService.raiseDispute(jobId, actor);
+        return reply.code(201).send({
+          job,
+          contract: sorobanService.createJob(job),
+        });
+      } catch (error) {
+        const response = toErrorResponse(error);
+        return reply.code(response.statusCode).send(response.body);
+      }
+    },
+  );
 
-      return {
-        job,
-        contract: sorobanService.raiseDispute(jobId, actor)
-      };
-    } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
-    }
-  });
+  app.post(
+    "/api/jobs/:jobId/accept",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { jobId } = request.params as { jobId: string };
+        const { actor } = actorSchema.parse(request.body);
 
-  app.post("/api/jobs/:jobId/resolve", async (request, reply) => {
-    try {
-      const { jobId } = request.params as { jobId: string };
-      const { mediator, favour } = resolveSchema.parse(request.body);
-      const job = jobService.resolveDispute(jobId, favour);
+        // Validate Stellar public key
+        validateStellarPublicKey(actor, "actor");
 
-      return {
-        job,
-        contract: sorobanService.resolveDispute(jobId, mediator, favour)
-      };
-    } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
-    }
-  });
+        const job = jobService.acceptJob(jobId, actor);
+
+        return {
+          job,
+          contract: sorobanService.acceptJob(jobId, actor),
+        };
+      } catch (error) {
+        const response = toErrorResponse(error);
+        return reply.code(response.statusCode).send(response.body);
+      }
+    },
+  );
+
+  app.post(
+    "/api/jobs/:jobId/confirm",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { jobId } = request.params as { jobId: string };
+        const { actor } = actorSchema.parse(request.body);
+
+        // Validate Stellar public key
+        validateStellarPublicKey(actor, "actor");
+
+        const job = jobService.confirmDone(jobId, actor);
+
+        return {
+          job,
+          contract: sorobanService.confirmDone(jobId, actor),
+        };
+      } catch (error) {
+        const response = toErrorResponse(error);
+        return reply.code(response.statusCode).send(response.body);
+      }
+    },
+  );
+
+  app.post(
+    "/api/jobs/:jobId/dispute",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { jobId } = request.params as { jobId: string };
+        const { actor } = actorSchema.parse(request.body);
+
+        // Validate Stellar public key
+        validateStellarPublicKey(actor, "actor");
+
+        const job = jobService.raiseDispute(jobId, actor);
+
+        return {
+          job,
+          contract: sorobanService.raiseDispute(jobId, actor),
+        };
+      } catch (error) {
+        const response = toErrorResponse(error);
+        return reply.code(response.statusCode).send(response.body);
+      }
+    },
+  );
+
+  app.post(
+    "/api/jobs/:jobId/resolve",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const { jobId } = request.params as { jobId: string };
+        const { mediator, favour } = resolveSchema.parse(request.body);
+
+        // Validate Stellar public key for mediator
+        validateStellarPublicKey(mediator, "mediator");
+
+        const job = jobService.resolveDispute(jobId, favour);
+
+        return {
+          job,
+          contract: sorobanService.resolveDispute(jobId, mediator, favour),
+        };
+      } catch (error) {
+        const response = toErrorResponse(error);
+        return reply.code(response.statusCode).send(response.body);
+      }
+    },
+  );
 }

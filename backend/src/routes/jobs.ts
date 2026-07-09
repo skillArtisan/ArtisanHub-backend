@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { jobService } from "../services/jobs.js";
 import { sorobanService } from "../services/soroban.js";
@@ -29,7 +29,7 @@ function toErrorResponse(error: unknown) {
   if (error instanceof z.ZodError) {
     return {
       statusCode: 400,
-      body: { error: "validation failed", issues: error.flatten() }
+      body: { error: "validation failed", issues: error.flatten() },
     };
   }
 
@@ -40,6 +40,11 @@ function toErrorResponse(error: unknown) {
                      message.includes("Contract execution failed") ? 502 : 409;
   return { statusCode, body: { error: message } };
 }
+
+const sensitiveRateLimiter = createRateLimiter({
+  maxRequests: 5,
+  windowMs: 60_000,
+});
 
 export async function registerJobRoutes(app: FastifyInstance) {
   app.get("/api/jobs", async () => {

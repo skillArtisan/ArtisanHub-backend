@@ -25,8 +25,12 @@ const resolveSchema = z.object({
   signature: z.string().min(1)
 });
 
-function toErrorResponse(error: unknown) {
-  if (error instanceof z.ZodError) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function toErrorResponse(error: any): {
+  statusCode: number;
+  body: Record<string, any>;
+} {
+  if (error && error.constructor && error.constructor.name === "ZodError") {
     return {
       statusCode: 400,
       body: { error: "validation failed", issues: error.flatten() },

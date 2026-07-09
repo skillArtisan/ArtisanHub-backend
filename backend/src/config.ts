@@ -9,6 +9,7 @@ export const config = {
     rpcUrl: process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org",
     horizonUrl: process.env.STELLAR_HORIZON_URL ?? "https://horizon-testnet.stellar.org",
     contractId: process.env.JOB_ESCROW_CONTRACT_ID ?? "",
-    mediatorPublicKey: process.env.MEDIATOR_PUBLIC_KEY ?? ""
+    mediatorPublicKey: process.env.MEDIATOR_PUBLIC_KEY ?? "",
+    serverPrivateKey: process.env.SERVER_PRIVATE_KEY ?? ""
   }
 };

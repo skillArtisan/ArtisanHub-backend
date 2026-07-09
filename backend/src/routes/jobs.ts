@@ -51,6 +51,55 @@ const sensitiveRateLimiter = createRateLimiter({
 });
 
 export async function registerJobRoutes(app: FastifyInstance) {
+  app.get("/api/settlements/:eventId", async (request, reply) => {
+    try {
+      const { eventId } = request.params as { eventId: string };
+      const event = horizonService.getSettlementEvent(eventId);
+
+      if (!event) {
+        return reply.code(404).send({ error: "settlement event not found" });
+      }
+
+      return { event };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "unexpected error";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.get("/api/jobs/:jobId/settlements", async (request, reply) => {
+    try {
+      const { jobId } = request.params as { jobId: string };
+      const events = horizonService.getSettlementEventsByJob(jobId);
+      return { events };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "unexpected error";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.get("/api/settlements", async (request, reply) => {
+    try {
+      const { status } = request.query as {
+        status?: "pending" | "completed" | "failed";
+      };
+
+      let events;
+      if (status) {
+        events = horizonService.getSettlementEventsByStatus(status);
+      } else {
+        events = Array.from((horizonService as any).store.events.values());
+      }
+
+      return { events };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "unexpected error";
+      return reply.code(500).send({ error: message });
+    }
+  });
   app.get("/api/jobs", async () => {
     return { jobs: await jobService.listJobs() };
   });

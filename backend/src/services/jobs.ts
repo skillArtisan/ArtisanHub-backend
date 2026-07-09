@@ -128,7 +128,7 @@ export const jobService = {
       disputeAt: null,
       jobHash: input.jobHash,
       trade: input.trade,
-      description: input.description
+      description: input.description,
     };
   },
 

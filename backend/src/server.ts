@@ -22,7 +22,7 @@ export async function buildServer() {
   app.get("/health", async () => {
     return {
       ok: true,
-      service: "owowork-backend",
+      service: "ArtisanHub-backend",
       network: config.soroban.network,
     };
   });

@@ -1,6 +1,6 @@
-# OwoWork
+# ArtisanHub
 
-OwoWork is a website for an artisan services marketplace backed by escrow-style job settlement. It contains a production-shaped frontend, a TypeScript backend API, and a Soroban smart contract that tracks job states, disputes, and artisan reputation.
+ArtisanHub is a website for an artisan services marketplace backed by escrow-style job settlement. It contains a production-shaped frontend, a TypeScript backend API, and a Soroban smart contract that tracks job states, disputes, and artisan reputation.
 
 The project is intentionally split into three clear workspaces:
 
@@ -11,7 +11,7 @@ The project is intentionally split into three clear workspaces:
 ## Repository Structure
 
 ```text
-owowork/
+ArtisanHub/
 ├── backend/
 │   ├── src/
 │   │   ├── config.ts
@@ -47,7 +47,7 @@ owowork/
 
 ## Product Concept
 
-OwoWork helps customers hire verified local artisans while keeping payment tied to a transparent job lifecycle.
+ArtisanHub helps customers hire verified local artisans while keeping payment tied to a transparent job lifecycle.
 
 1. A customer creates a job, names an artisan, and locks an agreed amount.
 2. The artisan accepts the job.
@@ -216,7 +216,7 @@ The backend should eventually own:
 
 ## Contract Workspace
 
-The contract is a Soroban Rust crate named `owowork-contract`. It stores job records and artisan reputation.
+The contract is a Soroban Rust crate named `ArtisanHub-contract`. It stores job records and artisan reputation.
 
 Useful commands:
 
@@ -311,9 +311,9 @@ Contract deployment flow:
 ```bash
 cd contract
 cargo build --target wasm32-unknown-unknown --release
-soroban contract optimize --wasm target/wasm32-unknown-unknown/release/owowork_contract.wasm
+soroban contract optimize --wasm target/wasm32-unknown-unknown/release/ArtisanHub_contract.wasm
 soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/owowork_contract.optimized.wasm \
+  --wasm target/wasm32-unknown-unknown/release/ArtisanHub_contract.optimized.wasm \
   --source <DEPLOYER_ACCOUNT> \
   --network testnet
 ```

@@ -3,6 +3,9 @@ import { z } from "zod";
 import { jobService } from "../services/jobs.js";
 import { sorobanService } from "../services/soroban.js";
 import { verifySignature } from "../utils/auth.js";
+import { auditTrail } from "../services/auditTrail.js";
+import { horizonService } from "../services/horizon.js";
+import { createRateLimiter } from "../middleware/rateLimiter.js";
 
 const createJobSchema = z.object({
   customer: z.string().min(1),
@@ -54,7 +57,7 @@ export async function registerJobRoutes(app: FastifyInstance) {
   app.get("/api/settlements/:eventId", async (request, reply) => {
     try {
       const { eventId } = request.params as { eventId: string };
-      const event = horizonService.getSettlementEvent(eventId);
+      const event = await horizonService.getSettlementEvent(eventId);
 
       if (!event) {
         return reply.code(404).send({ error: "settlement event not found" });
@@ -71,7 +74,7 @@ export async function registerJobRoutes(app: FastifyInstance) {
   app.get("/api/jobs/:jobId/settlements", async (request, reply) => {
     try {
       const { jobId } = request.params as { jobId: string };
-      const events = horizonService.getSettlementEventsByJob(jobId);
+      const events = await horizonService.getSettlementEventsByJob(jobId);
       return { events };
     } catch (error) {
       const message =
@@ -86,12 +89,9 @@ export async function registerJobRoutes(app: FastifyInstance) {
         status?: "pending" | "completed" | "failed";
       };
 
-      let events;
-      if (status) {
-        events = horizonService.getSettlementEventsByStatus(status);
-      } else {
-        events = Array.from((horizonService as any).store.events.values());
-      }
+      const events = status 
+        ? await horizonService.getSettlementEventsByStatus(status)
+        : await horizonService.getSettlementEventsByStatus("pending");
 
       return { events };
     } catch (error) {
@@ -246,6 +246,33 @@ export async function registerJobRoutes(app: FastifyInstance) {
     } catch (error) {
       const response = toErrorResponse(error);
       return reply.code(response.statusCode).send(response.body);
+    }
+  });
+
+  // Audit trail endpoints
+  app.get("/api/audit/:jobId", async (request, reply) => {
+    try {
+      const { jobId } = request.params as { jobId: string };
+      const entries = await auditTrail.getJobHistory(jobId);
+      return { entries };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unexpected error";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.get("/api/audit", async (request, reply) => {
+    try {
+      const { action, limit } = request.query as { action?: string; limit?: string };
+      const entries = await auditTrail.getEntries(
+        undefined,
+        action as any,
+        limit ? parseInt(limit) : 100
+      );
+      return { entries };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unexpected error";
+      return reply.code(500).send({ error: message });
     }
   });
 }

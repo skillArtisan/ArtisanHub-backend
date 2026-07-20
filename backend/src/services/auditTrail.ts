@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import db from "../db.js";
 
 export type AuditAction =
   | "job_created"
@@ -20,17 +21,17 @@ export interface AuditEntry {
 }
 
 class AuditTrailService {
-  private entries: AuditEntry[] = [];
+  private entries: AuditEntry[] = []; // Kept for backwards compatibility
   private readonly MAX_ENTRIES = 10000;
 
-  log(
+  async log(
     action: AuditAction,
     jobId: string,
     actor: string,
     details: Record<string, unknown> = {},
     ipAddress?: string,
     userAgent?: string,
-  ) {
+  ): Promise<AuditEntry> {
     const entry: AuditEntry = {
       id: randomUUID(),
       timestamp: new Date().toISOString(),
@@ -42,9 +43,20 @@ class AuditTrailService {
       userAgent,
     };
 
-    this.entries.push(entry);
+    // Persist to database
+    await db("audit_entries").insert({
+      id: entry.id,
+      timestamp: new Date(entry.timestamp),
+      action: entry.action,
+      job_id: entry.jobId,
+      actor: entry.actor,
+      details: JSON.stringify(entry.details),
+      ip_address: entry.ipAddress,
+      user_agent: entry.userAgent,
+    });
 
-    // Keep only the last MAX_ENTRIES
+    // Keep in memory for backwards compatibility
+    this.entries.push(entry);
     if (this.entries.length > this.MAX_ENTRIES) {
       this.entries.shift();
     }
@@ -60,35 +72,45 @@ class AuditTrailService {
     return entry;
   }
 
-  getEntries(
+  async getEntries(
     jobId?: string,
     action?: AuditAction,
     limit?: number,
-  ): AuditEntry[] {
-    let filtered = this.entries;
+  ): Promise<AuditEntry[]> {
+    let query = db("audit_entries").orderBy("timestamp", "desc");
 
     if (jobId) {
-      filtered = filtered.filter((entry) => entry.jobId === jobId);
+      query = query.where({ job_id: jobId });
     }
 
     if (action) {
-      filtered = filtered.filter((entry) => entry.action === action);
+      query = query.where({ action });
     }
-
-    const result = [...filtered].reverse();
 
     if (limit) {
-      return result.slice(0, limit);
+      query = query.limit(limit);
     }
 
-    return result;
+    const entries = await query;
+    
+    return entries.map(entry => ({
+      id: entry.id,
+      timestamp: new Date(entry.timestamp).toISOString(),
+      action: entry.action,
+      jobId: entry.job_id,
+      actor: entry.actor,
+      details: typeof entry.details === 'string' ? JSON.parse(entry.details) : entry.details,
+      ipAddress: entry.ip_address,
+      userAgent: entry.user_agent,
+    }));
   }
 
-  getJobHistory(jobId: string): AuditEntry[] {
+  async getJobHistory(jobId: string): Promise<AuditEntry[]> {
     return this.getEntries(jobId);
   }
 
-  clear() {
+  async clear(): Promise<void> {
+    await db("audit_entries").delete();
     this.entries = [];
   }
 }

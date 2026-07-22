@@ -153,10 +153,32 @@ export const jobService = {
       throw new Error("wrong customer");
     }
 
-    await db("jobs").where({ job_id: jobId }).update({ state: "Completed" });
+    // Use transaction to ensure job state and reputation update atomically
+    await db.transaction(async (trx) => {
+      await trx("jobs").where({ job_id: jobId }).update({ state: "Completed" });
+      
+      // Update reputation within same transaction
+      await ensureArtisan(job.artisan);
+      const current = await trx("reputations").where({ artisan: job.artisan }).first();
+      const currentRep = current ?? {
+        artisan: job.artisan,
+        completed: 0,
+        disputed: 0,
+        total_earned: "0"
+      };
+
+      currentRep.completed += 1;
+      currentRep.total_earned = (BigInt(currentRep.total_earned) + BigInt(job.amount)).toString();
+
+      await trx("reputations").insert({
+        artisan: job.artisan,
+        completed: currentRep.completed,
+        disputed: currentRep.disputed,
+        total_earned: currentRep.total_earned
+      }).onConflict("artisan").merge();
+    });
+
     job.state = "Completed";
-    
-    await updateReputation(job.artisan, job.amount, true);
     return job;
   },
 
@@ -183,15 +205,57 @@ export const jobService = {
     const job = await getExistingJob(jobId);
     assertJobState(job, "Disputed");
 
-    if (favour === "artisan") {
-      await db("jobs").where({ job_id: jobId }).update({ state: "Completed" });
-      job.state = "Completed";
-      await updateReputation(job.artisan, job.amount, true);
-    } else {
-      await db("jobs").where({ job_id: jobId }).update({ state: "Refunded" });
-      job.state = "Refunded";
-      await updateReputation(job.artisan, "0", false);
-    }
+    // Use transaction to ensure job state and reputation update atomically
+    await db.transaction(async (trx) => {
+      if (favour === "artisan") {
+        await trx("jobs").where({ job_id: jobId }).update({ state: "Completed" });
+        
+        // Update reputation within same transaction
+        await ensureArtisan(job.artisan);
+        const current = await trx("reputations").where({ artisan: job.artisan }).first();
+        const currentRep = current ?? {
+          artisan: job.artisan,
+          completed: 0,
+          disputed: 0,
+          total_earned: "0"
+        };
+
+        currentRep.completed += 1;
+        currentRep.total_earned = (BigInt(currentRep.total_earned) + BigInt(job.amount)).toString();
+
+        await trx("reputations").insert({
+          artisan: job.artisan,
+          completed: currentRep.completed,
+          disputed: currentRep.disputed,
+          total_earned: currentRep.total_earned
+        }).onConflict("artisan").merge();
+
+        job.state = "Completed";
+      } else {
+        await trx("jobs").where({ job_id: jobId }).update({ state: "Refunded" });
+        
+        // Update reputation within same transaction
+        await ensureArtisan(job.artisan);
+        const current = await trx("reputations").where({ artisan: job.artisan }).first();
+        const currentRep = current ?? {
+          artisan: job.artisan,
+          completed: 0,
+          disputed: 0,
+          total_earned: "0"
+        };
+
+        currentRep.disputed += 1;
+
+        await trx("reputations").insert({
+          artisan: job.artisan,
+          completed: currentRep.completed,
+          disputed: currentRep.disputed,
+          total_earned: currentRep.total_earned
+        }).onConflict("artisan").merge();
+
+        job.state = "Refunded";
+      }
+    });
 
     return job;
   },
@@ -224,6 +288,13 @@ export const jobService = {
     await db("jobs").where({ job_id: jobId }).update({ state });
   },
 
+  async clearDisputeTimestamp(jobId: string) {
+    await db("jobs").where({ job_id: jobId }).update({ 
+      state: "Active",
+      dispute_at: null 
+    });
+  },
+
   async revertReputation(artisan: string, amount: string, wasSuccess: boolean) {
     const current = await db("reputations").where({ artisan }).first();
     if (!current) return;
@@ -239,6 +310,45 @@ export const jobService = {
       completed: current.completed,
       disputed: current.disputed,
       total_earned: current.total_earned
+    });
+  },
+
+  async revertJobCompletion(jobId: string, artisan: string, amount: string) {
+    await db.transaction(async (trx) => {
+      await trx("jobs").where({ job_id: jobId }).update({ state: "Active" });
+      
+      const current = await trx("reputations").where({ artisan }).first();
+      if (current) {
+        current.completed = Math.max(0, current.completed - 1);
+        current.total_earned = (BigInt(current.total_earned) - BigInt(amount)).toString();
+        
+        await trx("reputations").where({ artisan }).update({
+          completed: current.completed,
+          total_earned: current.total_earned
+        });
+      }
+    });
+  },
+
+  async revertDisputeResolution(jobId: string, artisan: string, amount: string, favour: ResolveFavour) {
+    await db.transaction(async (trx) => {
+      await trx("jobs").where({ job_id: jobId }).update({ state: "Disputed" });
+      
+      const current = await trx("reputations").where({ artisan }).first();
+      if (current) {
+        if (favour === "artisan") {
+          current.completed = Math.max(0, current.completed - 1);
+          current.total_earned = (BigInt(current.total_earned) - BigInt(amount)).toString();
+        } else {
+          current.disputed = Math.max(0, current.disputed - 1);
+        }
+        
+        await trx("reputations").where({ artisan }).update({
+          completed: current.completed,
+          disputed: current.disputed,
+          total_earned: current.total_earned
+        });
+      }
     });
   }
 };

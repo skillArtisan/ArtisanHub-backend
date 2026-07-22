@@ -2,9 +2,9 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { jobService } from "../services/jobs.js";
 import { sorobanService } from "../services/soroban.js";
-import { verifySignature } from "../utils/auth.js";
-import { auditTrail } from "../services/auditTrail.js";
 import { horizonService } from "../services/horizon.js";
+import { verifySignature } from "../utils/auth.js";
+import { validateStellarPublicKey } from "../utils/validation.js";
 import { createRateLimiter } from "../middleware/rateLimiter.js";
 
 const createJobSchema = z.object({
@@ -28,78 +28,12 @@ const resolveSchema = z.object({
   signature: z.string().min(1)
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toErrorResponse(error: any): {
-  statusCode: number;
-  body: Record<string, any>;
-} {
-  if (error && error.constructor && error.constructor.name === "ZodError") {
-    return {
-      statusCode: 400,
-      body: { error: "validation failed", issues: error.flatten() },
-    };
-  }
-
-  const message = error instanceof Error ? error.message : "unexpected error";
-  const statusCode = message.includes("not found") ? 404 : 
-                     message.includes("unauthorized") ? 401 :
-                     message.includes("invalid signature") ? 401 : 
-                     message.includes("Contract execution failed") ? 502 : 409;
-  return { statusCode, body: { error: message } };
-}
-
 const sensitiveRateLimiter = createRateLimiter({
   maxRequests: 5,
   windowMs: 60_000,
 });
 
 export async function registerJobRoutes(app: FastifyInstance) {
-  app.get("/api/settlements/:eventId", async (request, reply) => {
-    try {
-      const { eventId } = request.params as { eventId: string };
-      const event = await horizonService.getSettlementEvent(eventId);
-
-      if (!event) {
-        return reply.code(404).send({ error: "settlement event not found" });
-      }
-
-      return { event };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "unexpected error";
-      return reply.code(500).send({ error: message });
-    }
-  });
-
-  app.get("/api/jobs/:jobId/settlements", async (request, reply) => {
-    try {
-      const { jobId } = request.params as { jobId: string };
-      const events = await horizonService.getSettlementEventsByJob(jobId);
-      return { events };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "unexpected error";
-      return reply.code(500).send({ error: message });
-    }
-  });
-
-  app.get("/api/settlements", async (request, reply) => {
-    try {
-      const { status } = request.query as {
-        status?: "pending" | "completed" | "failed";
-      };
-
-      const events = status 
-        ? await horizonService.getSettlementEventsByStatus(status)
-        : await horizonService.getSettlementEventsByStatus("pending");
-
-      return { events };
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "unexpected error";
-      return reply.code(500).send({ error: message });
-    }
-  });
   app.get("/api/jobs", async () => {
     return { jobs: await jobService.listJobs() };
   });
@@ -109,14 +43,19 @@ export async function registerJobRoutes(app: FastifyInstance) {
       const { jobId } = request.params as { jobId: string };
       return { job: await jobService.getJob(jobId) };
     } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
+      const message = error instanceof Error ? error.message : "unexpected error";
+      const statusCode = message.includes("not found") ? 404 : 500;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 
-  app.post("/api/jobs", async (request, reply) => {
+  app.post("/api/jobs", { preHandler: sensitiveRateLimiter }, async (request, reply) => {
     try {
       const payload = createJobSchema.parse(request.body);
+      
+      // Validate Stellar public keys
+      validateStellarPublicKey(payload.customer, "customer");
+      validateStellarPublicKey(payload.artisan, "artisan");
       
       const sigPayload = `CREATE_JOB:${payload.customer}:${payload.artisan}:${payload.amount}:${payload.jobHash}`;
       if (!verifySignature(payload.customer, sigPayload, payload.signature)) {
@@ -133,8 +72,11 @@ export async function registerJobRoutes(app: FastifyInstance) {
         throw contractError;
       }
     } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
+      const message = error instanceof Error ? error.message : "unexpected error";
+      const statusCode = message.includes("validation") || message.includes("invalid") ? 400 :
+                         message.includes("unauthorized") ? 401 :
+                         message.includes("Contract execution failed") ? 502 : 500;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 
@@ -142,6 +84,9 @@ export async function registerJobRoutes(app: FastifyInstance) {
     try {
       const { jobId } = request.params as { jobId: string };
       const { actor, signature } = actorSchema.parse(request.body);
+      
+      // Validate Stellar public key
+      validateStellarPublicKey(actor, "actor");
       
       const sigPayload = `ACCEPT_JOB:${jobId}`;
       if (!verifySignature(actor, sigPayload, signature)) {
@@ -158,8 +103,12 @@ export async function registerJobRoutes(app: FastifyInstance) {
         throw contractError;
       }
     } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
+      const message = error instanceof Error ? error.message : "unexpected error";
+      const statusCode = message.includes("not found") ? 404 :
+                         message.includes("validation") || message.includes("invalid") ? 400 :
+                         message.includes("unauthorized") ? 401 :
+                         message.includes("Contract execution failed") ? 502 : 409;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 
@@ -167,6 +116,9 @@ export async function registerJobRoutes(app: FastifyInstance) {
     try {
       const { jobId } = request.params as { jobId: string };
       const { actor, signature } = actorSchema.parse(request.body);
+      
+      // Validate Stellar public key
+      validateStellarPublicKey(actor, "actor");
       
       const sigPayload = `CONFIRM_DONE:${jobId}`;
       if (!verifySignature(actor, sigPayload, signature)) {
@@ -179,20 +131,27 @@ export async function registerJobRoutes(app: FastifyInstance) {
         const contract = await sorobanService.confirmDone(jobId, actor);
         return { job, contract };
       } catch (contractError) {
-        await jobService.setJobState(jobId, "Active");
-        await jobService.revertReputation(job.artisan, job.amount, true);
+        // Database transaction committed, need manual rollback
+        await jobService.revertJobCompletion(jobId, job.artisan, job.amount);
         throw contractError;
       }
     } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
+      const message = error instanceof Error ? error.message : "unexpected error";
+      const statusCode = message.includes("not found") ? 404 :
+                         message.includes("validation") || message.includes("invalid") ? 400 :
+                         message.includes("unauthorized") ? 401 :
+                         message.includes("Contract execution failed") ? 502 : 409;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 
-  app.post("/api/jobs/:jobId/dispute", async (request, reply) => {
+  app.post("/api/jobs/:jobId/dispute", { preHandler: sensitiveRateLimiter }, async (request, reply) => {
     try {
       const { jobId } = request.params as { jobId: string };
       const { actor, signature } = actorSchema.parse(request.body);
+      
+      // Validate Stellar public key
+      validateStellarPublicKey(actor, "actor");
       
       const sigPayload = `RAISE_DISPUTE:${jobId}`;
       if (!verifySignature(actor, sigPayload, signature)) {
@@ -205,20 +164,27 @@ export async function registerJobRoutes(app: FastifyInstance) {
         const contract = await sorobanService.raiseDispute(jobId, actor);
         return { job, contract };
       } catch (contractError) {
-        await jobService.setJobState(jobId, "Active");
-        // We also need to clear dispute_at, but setJobState only sets state. For simplicity, we just leave dispute_at.
+        // Fix: Clear both state AND dispute_at timestamp on rollback
+        await jobService.clearDisputeTimestamp(jobId);
         throw contractError;
       }
     } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
+      const message = error instanceof Error ? error.message : "unexpected error";
+      const statusCode = message.includes("not found") ? 404 :
+                         message.includes("validation") || message.includes("invalid") ? 400 :
+                         message.includes("unauthorized") ? 401 :
+                         message.includes("Contract execution failed") ? 502 : 409;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 
-  app.post("/api/jobs/:jobId/resolve", async (request, reply) => {
+  app.post("/api/jobs/:jobId/resolve", { preHandler: sensitiveRateLimiter }, async (request, reply) => {
     try {
       const { jobId } = request.params as { jobId: string };
       const { mediator, favour, signature } = resolveSchema.parse(request.body);
+      
+      // Validate mediator public key
+      validateStellarPublicKey(mediator, "mediator");
       
       if (!process.env.MEDIATOR_PUBLIC_KEY || mediator !== process.env.MEDIATOR_PUBLIC_KEY) {
         throw new Error("unauthorized: not the mediator");
@@ -235,17 +201,17 @@ export async function registerJobRoutes(app: FastifyInstance) {
         const contract = await sorobanService.resolveDispute(jobId, mediator, favour);
         return { job, contract };
       } catch (contractError) {
-        await jobService.setJobState(jobId, "Disputed");
-        if (favour === "artisan") {
-          await jobService.revertReputation(job.artisan, job.amount, true);
-        } else {
-          await jobService.revertReputation(job.artisan, "0", false);
-        }
+        // Database transaction committed, need manual rollback
+        await jobService.revertDisputeResolution(jobId, job.artisan, job.amount, favour);
         throw contractError;
       }
     } catch (error) {
-      const response = toErrorResponse(error);
-      return reply.code(response.statusCode).send(response.body);
+      const message = error instanceof Error ? error.message : "unexpected error";
+      const statusCode = message.includes("not found") ? 404 :
+                         message.includes("validation") || message.includes("invalid") ? 400 :
+                         message.includes("unauthorized") ? 401 :
+                         message.includes("Contract execution failed") ? 502 : 409;
+      return reply.code(statusCode).send({ error: message });
     }
   });
 

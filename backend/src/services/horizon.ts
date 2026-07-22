@@ -6,6 +6,7 @@ import type {
   IdempotencyKey,
 } from "../types.js";
 import { config } from "../config.js";
+import db from "../db.js";
 
 type HorizonAccount = {
   accountId: string;
@@ -34,6 +35,7 @@ type IdempotencyStore = {
   events: Map<string, SettlementEvent>;
 };
 
+// Kept for backwards compatibility but data is now in database
 const store: IdempotencyStore = {
   keys: new Map(),
   events: new Map(),
@@ -45,10 +47,50 @@ function generateIdempotencyKey(jobId: string, operation: string): string {
   return `${jobId}-${operation}-${timestamp}-${random}`;
 }
 
-function isIdempotencyKeyValid(key: IdempotencyKey): boolean {
+async function isIdempotencyKeyValid(key: string): Promise<boolean> {
+  const existing = await db("idempotency_keys").where({ key }).first();
+  if (!existing) return false;
+  
   const now = new Date();
-  const expiresAt = new Date(key.expiresAt);
+  const expiresAt = new Date(existing.expires_at);
   return now < expiresAt;
+}
+
+async function saveIdempotencyKey(idempotencyKey: IdempotencyKey): Promise<void> {
+  await db("idempotency_keys").insert({
+    key: idempotencyKey.key,
+    job_id: idempotencyKey.jobId,
+    operation: idempotencyKey.operation,
+    created_at: new Date(idempotencyKey.createdAt),
+    expires_at: new Date(idempotencyKey.expiresAt),
+  }).onConflict("key").ignore();
+}
+
+async function saveSettlementEvent(event: SettlementEvent): Promise<void> {
+  await db("settlement_events").insert({
+    id: event.id,
+    job_id: event.jobId,
+    type: event.type,
+    amount: event.amount,
+    from_address: event.from,
+    to_address: event.to,
+    transaction_hash: event.transactionHash,
+    status: event.status,
+    error_message: event.errorMessage,
+    created_at: new Date(event.createdAt),
+    completed_at: event.completedAt ? new Date(event.completedAt) : null,
+  }).onConflict("id").merge();
+}
+
+async function updateSettlementEvent(eventId: string, updates: Partial<SettlementEvent>): Promise<void> {
+  const dbUpdates: any = {};
+  
+  if (updates.status) dbUpdates.status = updates.status;
+  if (updates.transactionHash) dbUpdates.transaction_hash = updates.transactionHash;
+  if (updates.completedAt) dbUpdates.completed_at = new Date(updates.completedAt);
+  if (updates.errorMessage) dbUpdates.error_message = updates.errorMessage;
+  
+  await db("settlement_events").where({ id: eventId }).update(dbUpdates);
 }
 
 async function fetchHorizonAccount(publicKey: string): Promise<HorizonAccount> {
@@ -137,17 +179,33 @@ export const horizonService = {
     const operation = "job_completion_payout";
     const key = idempotencyKey || generateIdempotencyKey(job.jobId, operation);
 
-    const existingKey = store.keys.get(key);
-    if (existingKey && isIdempotencyKeyValid(existingKey)) {
-      const existingEvent = store.events.get(existingKey.jobId);
-      if (existingEvent && existingEvent.status === "completed") {
+    // Check for existing idempotency key
+    const existingKey = await db("idempotency_keys").where({ key }).first();
+    if (existingKey && await isIdempotencyKeyValid(key)) {
+      const existingEvent = await db("settlement_events")
+        .where({ job_id: job.jobId, type: "payout", status: "completed" })
+        .first();
+        
+      if (existingEvent) {
         return {
           transaction: {
-            hash: existingEvent.transactionHash,
+            hash: existingEvent.transaction_hash,
             successful: true,
-            createdAt: existingEvent.completedAt || existingEvent.createdAt,
+            createdAt: existingEvent.completed_at || existingEvent.created_at,
           },
-          event: existingEvent,
+          event: {
+            id: existingEvent.id,
+            jobId: existingEvent.job_id,
+            type: existingEvent.type,
+            amount: existingEvent.amount,
+            from: existingEvent.from_address,
+            to: existingEvent.to_address,
+            transactionHash: existingEvent.transaction_hash,
+            status: existingEvent.status,
+            createdAt: new Date(existingEvent.created_at).toISOString(),
+            completedAt: existingEvent.completed_at ? new Date(existingEvent.completed_at).toISOString() : null,
+            errorMessage: existingEvent.error_message,
+          },
         };
       }
     }
@@ -166,7 +224,7 @@ export const horizonService = {
       completedAt: null,
     };
 
-    store.events.set(eventId, event);
+    await saveSettlementEvent(event);
 
     try {
       const customerAccount = await fetchHorizonAccount(job.customer);
@@ -188,7 +246,13 @@ export const horizonService = {
       event.transactionHash = transaction.hash;
       event.completedAt = transaction.createdAt;
 
-      store.keys.set(key, {
+      await updateSettlementEvent(eventId, {
+        status: "completed",
+        transactionHash: transaction.hash,
+        completedAt: transaction.createdAt,
+      });
+
+      await saveIdempotencyKey({
         key,
         jobId: job.jobId,
         operation,
@@ -199,9 +263,13 @@ export const horizonService = {
       return { transaction, event };
     } catch (error) {
       event.status = "failed";
-      event.errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
-      // Don't throw - allow job state to be updated even if payment fails
+      event.errorMessage = error instanceof Error ? error.message : "Unknown error";
+      
+      await updateSettlementEvent(eventId, {
+        status: "failed",
+        errorMessage: event.errorMessage,
+      });
+
       return {
         transaction: {
           hash: "",
@@ -220,22 +288,32 @@ export const horizonService = {
     const operation = "dispute_refund";
     const key = idempotencyKey || generateIdempotencyKey(job.jobId, operation);
 
-    const existingKey = store.keys.get(key);
-    if (existingKey && isIdempotencyKeyValid(existingKey)) {
-      const existingEvent = Array.from(store.events.values()).find(
-        (e) =>
-          e.jobId === job.jobId &&
-          e.type === "dispute_refund" &&
-          e.status === "completed",
-      );
+    const existingKey = await db("idempotency_keys").where({ key }).first();
+    if (existingKey && await isIdempotencyKeyValid(key)) {
+      const existingEvent = await db("settlement_events")
+        .where({ job_id: job.jobId, type: "dispute_refund", status: "completed" })
+        .first();
+        
       if (existingEvent) {
         return {
           transaction: {
-            hash: existingEvent.transactionHash,
+            hash: existingEvent.transaction_hash,
             successful: true,
-            createdAt: existingEvent.completedAt || existingEvent.createdAt,
+            createdAt: existingEvent.completed_at || existingEvent.created_at,
           },
-          event: existingEvent,
+          event: {
+            id: existingEvent.id,
+            jobId: existingEvent.job_id,
+            type: existingEvent.type,
+            amount: existingEvent.amount,
+            from: existingEvent.from_address,
+            to: existingEvent.to_address,
+            transactionHash: existingEvent.transaction_hash,
+            status: existingEvent.status,
+            createdAt: new Date(existingEvent.created_at).toISOString(),
+            completedAt: existingEvent.completed_at ? new Date(existingEvent.completed_at).toISOString() : null,
+            errorMessage: existingEvent.error_message,
+          },
         };
       }
     }
@@ -254,7 +332,7 @@ export const horizonService = {
       completedAt: null,
     };
 
-    store.events.set(eventId, event);
+    await saveSettlementEvent(event);
 
     try {
       const artisanAccount = await fetchHorizonAccount(job.artisan);
@@ -276,7 +354,13 @@ export const horizonService = {
       event.transactionHash = transaction.hash;
       event.completedAt = transaction.createdAt;
 
-      store.keys.set(key, {
+      await updateSettlementEvent(eventId, {
+        status: "completed",
+        transactionHash: transaction.hash,
+        completedAt: transaction.createdAt,
+      });
+
+      await saveIdempotencyKey({
         key,
         jobId: job.jobId,
         operation,
@@ -287,9 +371,13 @@ export const horizonService = {
       return { transaction, event };
     } catch (error) {
       event.status = "failed";
-      event.errorMessage =
-        error instanceof Error ? error.message : "Unknown error";
-      // Don't throw - allow job state to be updated even if payment fails
+      event.errorMessage = error instanceof Error ? error.message : "Unknown error";
+      
+      await updateSettlementEvent(eventId, {
+        status: "failed",
+        errorMessage: event.errorMessage,
+      });
+
       return {
         transaction: {
           hash: "",
@@ -301,38 +389,73 @@ export const horizonService = {
     }
   },
 
-  getSettlementEvent(eventId: string): SettlementEvent | undefined {
-    return store.events.get(eventId);
+  async getSettlementEvent(eventId: string): Promise<SettlementEvent | undefined> {
+    const event = await db("settlement_events").where({ id: eventId }).first();
+    if (!event) return undefined;
+    
+    return {
+      id: event.id,
+      jobId: event.job_id,
+      type: event.type,
+      amount: event.amount,
+      from: event.from_address,
+      to: event.to_address,
+      transactionHash: event.transaction_hash,
+      status: event.status,
+      createdAt: new Date(event.created_at).toISOString(),
+      completedAt: event.completed_at ? new Date(event.completed_at).toISOString() : null,
+      errorMessage: event.error_message,
+    };
   },
 
-  getSettlementEventsByJob(jobId: string): SettlementEvent[] {
-    return Array.from(store.events.values()).filter(
-      (event) => event.jobId === jobId,
-    );
+  async getSettlementEventsByJob(jobId: string): Promise<SettlementEvent[]> {
+    const events = await db("settlement_events")
+      .where({ job_id: jobId })
+      .orderBy("created_at", "desc");
+      
+    return events.map(event => ({
+      id: event.id,
+      jobId: event.job_id,
+      type: event.type,
+      amount: event.amount,
+      from: event.from_address,
+      to: event.to_address,
+      transactionHash: event.transaction_hash,
+      status: event.status,
+      createdAt: new Date(event.created_at).toISOString(),
+      completedAt: event.completed_at ? new Date(event.completed_at).toISOString() : null,
+      errorMessage: event.error_message,
+    }));
   },
 
-  getSettlementEventsByStatus(
+  async getSettlementEventsByStatus(
     status: "pending" | "completed" | "failed",
-  ): SettlementEvent[] {
-    return Array.from(store.events.values()).filter(
-      (event) => event.status === status,
-    );
+  ): Promise<SettlementEvent[]> {
+    const events = await db("settlement_events")
+      .where({ status })
+      .orderBy("created_at", "desc");
+      
+    return events.map(event => ({
+      id: event.id,
+      jobId: event.job_id,
+      type: event.type,
+      amount: event.amount,
+      from: event.from_address,
+      to: event.to_address,
+      transactionHash: event.transaction_hash,
+      status: event.status,
+      createdAt: new Date(event.created_at).toISOString(),
+      completedAt: event.completed_at ? new Date(event.completed_at).toISOString() : null,
+      errorMessage: event.error_message,
+    }));
   },
 
-  validateIdempotencyKey(key: string): boolean {
-    const existingKey = store.keys.get(key);
-    if (!existingKey) {
-      return false;
-    }
-    return isIdempotencyKeyValid(existingKey);
+  async validateIdempotencyKey(key: string): Promise<boolean> {
+    return await isIdempotencyKeyValid(key);
   },
 
-  cleanupExpiredKeys() {
+  async cleanupExpiredKeys(): Promise<void> {
     const now = new Date();
-    for (const [key, idempotencyKey] of store.keys.entries()) {
-      if (new Date(idempotencyKey.expiresAt) < now) {
-        store.keys.delete(key);
-      }
-    }
+    await db("idempotency_keys").where("expires_at", "<", now).delete();
   },
 };

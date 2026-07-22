@@ -214,4 +214,31 @@ export async function registerJobRoutes(app: FastifyInstance) {
       return reply.code(statusCode).send({ error: message });
     }
   });
+
+  // Audit trail endpoints
+  app.get("/api/audit/:jobId", async (request, reply) => {
+    try {
+      const { jobId } = request.params as { jobId: string };
+      const entries = await auditTrail.getJobHistory(jobId);
+      return { entries };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unexpected error";
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  app.get("/api/audit", async (request, reply) => {
+    try {
+      const { action, limit } = request.query as { action?: string; limit?: string };
+      const entries = await auditTrail.getEntries(
+        undefined,
+        action as any,
+        limit ? parseInt(limit) : 100
+      );
+      return { entries };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unexpected error";
+      return reply.code(500).send({ error: message });
+    }
+  });
 }

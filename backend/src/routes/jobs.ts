@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import { jobService } from "../services/jobs.js";
 import { sorobanService } from "../services/soroban.js";
+import { horizonService } from "../services/horizon.js";
 import { verifySignature } from "../utils/auth.js";
 
 const createJobSchema = z.object({

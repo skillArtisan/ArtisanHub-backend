@@ -36,10 +36,10 @@ export function requestLogger() {
     const originalSend = reply.raw.write;
     let responseSize = 0;
 
-    reply.raw.write = function (chunk: any, encoding?: BufferEncoding) {
+    reply.raw.write = function (this: any, chunk: any, encoding?: BufferEncoding | undefined, callback?: any) {
       responseSize += Buffer.byteLength(chunk);
-      return originalSend.call(this, chunk, encoding);
-    };
+      return (originalSend as any).call(this, chunk, encoding, callback);
+    } as any;
 
     // Wait for reply to finish
     reply.raw.on("finish", () => {

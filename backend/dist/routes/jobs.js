@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { jobService } from "../services/jobs.js";
 import { sorobanService } from "../services/soroban.js";
-import { horizonService } from "../services/horizon.js";
+import { verifySignature } from "../utils/auth.js";
+import { validateStellarPublicKey } from "../utils/validation.js";
+import { createRateLimiter } from "../middleware/rateLimiter.js";
 const createJobSchema = z.object({
     customer: z.string().min(1),
     artisan: z.string().min(1),
@@ -9,155 +11,209 @@ const createJobSchema = z.object({
     jobHash: z.string().min(8),
     trade: z.string().min(1).max(32),
     description: z.string().max(1000).optional(),
+    signature: z.string().min(1)
 });
 const actorSchema = z.object({
     actor: z.string().min(1),
+    signature: z.string().min(1)
 });
 const resolveSchema = z.object({
     mediator: z.string().min(1),
     favour: z.enum(["artisan", "customer"]),
+    signature: z.string().min(1)
 });
-function toErrorResponse(error) {
-    if (error instanceof z.ZodError) {
-        return {
-            statusCode: 400,
-            body: { error: "validation failed", issues: error.flatten() },
-        };
-    }
-    const message = error instanceof Error ? error.message : "unexpected error";
-    const statusCode = message.includes("not found") ? 404 : 409;
-    return { statusCode, body: { error: message } };
-}
+const sensitiveRateLimiter = createRateLimiter({
+    maxRequests: 5,
+    windowMs: 60_000,
+});
 export async function registerJobRoutes(app) {
-    app.get("/api/settlements/:eventId", async (request, reply) => {
-        try {
-            const { eventId } = request.params;
-            const event = horizonService.getSettlementEvent(eventId);
-            if (!event) {
-                return reply.code(404).send({ error: "settlement event not found" });
-            }
-            return { event };
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : "unexpected error";
-            return reply.code(500).send({ error: message });
-        }
-    });
-    app.get("/api/jobs/:jobId/settlements", async (request, reply) => {
-        try {
-            const { jobId } = request.params;
-            const events = horizonService.getSettlementEventsByJob(jobId);
-            return { events };
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : "unexpected error";
-            return reply.code(500).send({ error: message });
-        }
-    });
-    app.get("/api/settlements", async (request, reply) => {
-        try {
-            const { status } = request.query;
-            let events;
-            if (status) {
-                events = horizonService.getSettlementEventsByStatus(status);
-            }
-            else {
-                events = Array.from(horizonService.store.events.values());
-            }
-            return { events };
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : "unexpected error";
-            return reply.code(500).send({ error: message });
-        }
-    });
     app.get("/api/jobs", async () => {
-        return { jobs: jobService.listJobs() };
+        return { jobs: await jobService.listJobs() };
     });
     app.get("/api/jobs/:jobId", async (request, reply) => {
         try {
             const { jobId } = request.params;
-            return { job: jobService.getJob(jobId) };
+            return { job: await jobService.getJob(jobId) };
         }
         catch (error) {
-            const response = toErrorResponse(error);
-            return reply.code(response.statusCode).send(response.body);
+            const message = error instanceof Error ? error.message : "unexpected error";
+            const statusCode = message.includes("not found") ? 404 : 500;
+            return reply.code(statusCode).send({ error: message });
         }
     });
-    app.post("/api/jobs", async (request, reply) => {
+    app.post("/api/jobs", { preHandler: sensitiveRateLimiter }, async (request, reply) => {
         try {
             const payload = createJobSchema.parse(request.body);
-            const job = jobService.createJob(payload);
-            return reply.code(201).send({
-                job,
-                contract: sorobanService.createJob(job),
-            });
+            // Validate Stellar public keys
+            validateStellarPublicKey(payload.customer, "customer");
+            validateStellarPublicKey(payload.artisan, "artisan");
+            const sigPayload = `CREATE_JOB:${payload.customer}:${payload.artisan}:${payload.amount}:${payload.jobHash}`;
+            if (!verifySignature(payload.customer, sigPayload, payload.signature)) {
+                throw new Error("invalid signature");
+            }
+            const job = await jobService.createJob(payload);
+            try {
+                const contract = await sorobanService.createJob(job);
+                return reply.code(201).send({ job, contract });
+            }
+            catch (contractError) {
+                await jobService.deleteJob(job.jobId);
+                throw contractError;
+            }
         }
         catch (error) {
-            const response = toErrorResponse(error);
-            return reply.code(response.statusCode).send(response.body);
+            const message = error instanceof Error ? error.message : "unexpected error";
+            const statusCode = message.includes("validation") || message.includes("invalid") ? 400 :
+                message.includes("unauthorized") ? 401 :
+                    message.includes("Contract execution failed") ? 502 : 500;
+            return reply.code(statusCode).send({ error: message });
         }
     });
     app.post("/api/jobs/:jobId/accept", async (request, reply) => {
         try {
             const { jobId } = request.params;
-            const { actor } = actorSchema.parse(request.body);
-            const job = jobService.acceptJob(jobId, actor);
-            return {
-                job,
-                contract: sorobanService.acceptJob(jobId, actor),
-            };
+            const { actor, signature } = actorSchema.parse(request.body);
+            // Validate Stellar public key
+            validateStellarPublicKey(actor, "actor");
+            const sigPayload = `ACCEPT_JOB:${jobId}`;
+            if (!verifySignature(actor, sigPayload, signature)) {
+                throw new Error("invalid signature");
+            }
+            const job = await jobService.acceptJob(jobId, actor);
+            try {
+                const contract = await sorobanService.acceptJob(jobId, actor);
+                return { job, contract };
+            }
+            catch (contractError) {
+                await jobService.setJobState(jobId, "Open");
+                throw contractError;
+            }
         }
         catch (error) {
-            const response = toErrorResponse(error);
-            return reply.code(response.statusCode).send(response.body);
+            const message = error instanceof Error ? error.message : "unexpected error";
+            const statusCode = message.includes("not found") ? 404 :
+                message.includes("validation") || message.includes("invalid") ? 400 :
+                    message.includes("unauthorized") ? 401 :
+                        message.includes("Contract execution failed") ? 502 : 409;
+            return reply.code(statusCode).send({ error: message });
         }
     });
     app.post("/api/jobs/:jobId/confirm", async (request, reply) => {
         try {
             const { jobId } = request.params;
-            const { actor, idempotencyKey } = request.body;
-            const result = await jobService.confirmDone(jobId, actor, idempotencyKey);
-            return {
-                job: result.job,
-                settlementEvent: result.settlementEvent,
-                contract: sorobanService.confirmDone(jobId, actor),
-            };
+            const { actor, signature } = actorSchema.parse(request.body);
+            // Validate Stellar public key
+            validateStellarPublicKey(actor, "actor");
+            const sigPayload = `CONFIRM_DONE:${jobId}`;
+            if (!verifySignature(actor, sigPayload, signature)) {
+                throw new Error("invalid signature");
+            }
+            const job = await jobService.confirmDone(jobId, actor);
+            try {
+                const contract = await sorobanService.confirmDone(jobId, actor);
+                return { job, contract };
+            }
+            catch (contractError) {
+                // Database transaction committed, need manual rollback
+                await jobService.revertJobCompletion(jobId, job.artisan, job.amount);
+                throw contractError;
+            }
         }
         catch (error) {
-            const response = toErrorResponse(error);
-            return reply.code(response.statusCode).send(response.body);
+            const message = error instanceof Error ? error.message : "unexpected error";
+            const statusCode = message.includes("not found") ? 404 :
+                message.includes("validation") || message.includes("invalid") ? 400 :
+                    message.includes("unauthorized") ? 401 :
+                        message.includes("Contract execution failed") ? 502 : 409;
+            return reply.code(statusCode).send({ error: message });
         }
     });
-    app.post("/api/jobs/:jobId/dispute", async (request, reply) => {
+    app.post("/api/jobs/:jobId/dispute", { preHandler: sensitiveRateLimiter }, async (request, reply) => {
         try {
             const { jobId } = request.params;
-            const { actor } = actorSchema.parse(request.body);
-            const job = jobService.raiseDispute(jobId, actor);
-            return {
-                job,
-                contract: sorobanService.raiseDispute(jobId, actor),
-            };
+            const { actor, signature } = actorSchema.parse(request.body);
+            // Validate Stellar public key
+            validateStellarPublicKey(actor, "actor");
+            const sigPayload = `RAISE_DISPUTE:${jobId}`;
+            if (!verifySignature(actor, sigPayload, signature)) {
+                throw new Error("invalid signature");
+            }
+            const job = await jobService.raiseDispute(jobId, actor);
+            try {
+                const contract = await sorobanService.raiseDispute(jobId, actor);
+                return { job, contract };
+            }
+            catch (contractError) {
+                // Fix: Clear both state AND dispute_at timestamp on rollback
+                await jobService.clearDisputeTimestamp(jobId);
+                throw contractError;
+            }
         }
         catch (error) {
-            const response = toErrorResponse(error);
-            return reply.code(response.statusCode).send(response.body);
+            const message = error instanceof Error ? error.message : "unexpected error";
+            const statusCode = message.includes("not found") ? 404 :
+                message.includes("validation") || message.includes("invalid") ? 400 :
+                    message.includes("unauthorized") ? 401 :
+                        message.includes("Contract execution failed") ? 502 : 409;
+            return reply.code(statusCode).send({ error: message });
         }
     });
-    app.post("/api/jobs/:jobId/resolve", async (request, reply) => {
+    app.post("/api/jobs/:jobId/resolve", { preHandler: sensitiveRateLimiter }, async (request, reply) => {
         try {
             const { jobId } = request.params;
-            const { mediator, favour, idempotencyKey } = request.body;
-            const result = await jobService.resolveDispute(jobId, favour, idempotencyKey);
-            return {
-                job: result.job,
-                settlementEvent: result.settlementEvent,
-                contract: sorobanService.resolveDispute(jobId, mediator, favour),
-            };
+            const { mediator, favour, signature } = resolveSchema.parse(request.body);
+            // Validate mediator public key
+            validateStellarPublicKey(mediator, "mediator");
+            if (!process.env.MEDIATOR_PUBLIC_KEY || mediator !== process.env.MEDIATOR_PUBLIC_KEY) {
+                throw new Error("unauthorized: not the mediator");
+            }
+            const sigPayload = `RESOLVE_DISPUTE:${jobId}:${favour}`;
+            if (!verifySignature(mediator, sigPayload, signature)) {
+                throw new Error("invalid signature");
+            }
+            const job = await jobService.resolveDispute(jobId, favour);
+            try {
+                const contract = await sorobanService.resolveDispute(jobId, mediator, favour);
+                return { job, contract };
+            }
+            catch (contractError) {
+                // Database transaction committed, need manual rollback
+                await jobService.revertDisputeResolution(jobId, job.artisan, job.amount, favour);
+                throw contractError;
+            }
         }
         catch (error) {
-            const response = toErrorResponse(error);
-            return reply.code(response.statusCode).send(response.body);
+            const message = error instanceof Error ? error.message : "unexpected error";
+            const statusCode = message.includes("not found") ? 404 :
+                message.includes("validation") || message.includes("invalid") ? 400 :
+                    message.includes("unauthorized") ? 401 :
+                        message.includes("Contract execution failed") ? 502 : 409;
+            return reply.code(statusCode).send({ error: message });
         }
     });
+    // Audit trail endpoints - TODO: implement audit trail service
+    // app.get("/api/audit/:jobId", async (request, reply) => {
+    //   try {
+    //     const { jobId } = request.params as { jobId: string };
+    //     const entries = await auditTrail.getJobHistory(jobId);
+    //     return { entries };
+    //   } catch (error) {
+    //     const message = error instanceof Error ? error.message : "unexpected error";
+    //     return reply.code(500).send({ error: message });
+    //   }
+    // });
+    // app.get("/api/audit", async (request, reply) => {
+    //   try {
+    //     const { action, limit } = request.query as { action?: string; limit?: string };
+    //     const entries = await auditTrail.getEntries(
+    //       undefined,
+    //       action as any,
+    //       limit ? parseInt(limit) : 100
+    //     );
+    //     return { entries };
+    //   } catch (error) {
+    //     const message = error instanceof Error ? error.message : "unexpected error";
+    //     return reply.code(500).send({ error: message });
+    //   }
+    // });
 }

@@ -51,3 +51,47 @@ export type IdempotencyKey = {
   createdAt: string;
   expiresAt: string;
 };
+
+// User Management Types
+export type UserPreferences = {
+  notificationsEnabled: boolean;
+  emailNotifications: boolean;
+  preferredLanguage: string;
+  timezone: string;
+  receivePromotionalEmails: boolean;
+  notificationSettings: Record<string, unknown>;
+};
+
+export type UserProfile = {
+  id: string; // Stellar public key
+  email: string;
+  fullName: string | null;
+  profileImageUrl: string | null;
+  preferences: Record<string, unknown>;
+  emailVerified: boolean;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProfileImage = {
+  id: string;
+  userId: string;
+  imageUrl: string;
+  mimeType: string;
+  fileSize: number;
+  isCurrent: boolean;
+  createdAt: string;
+};
+
+export type AccountDeletionRequest = {
+  id: string;
+  userId: string;
+  status: "pending" | "confirmed" | "completed" | "cancelled";
+  confirmationToken: string;
+  requestedAt: string;
+  confirmedAt: string | null;
+  completionAt: string | null;
+  expiresAt: string;
+  reason: string | null;
+};

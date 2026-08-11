@@ -52,133 +52,46 @@ export type IdempotencyKey = {
   expiresAt: string;
 };
 
-// Artisan Management Types
-export type ArtisanProfile = {
-  artisanId: string;
-  bio: string | null;
-  experienceYears: string | null;
-  education: string | null;
-  certifications: unknown; // Array of certification IDs or objects
-  skills: string[];
-  languages: string[];
-  averageRating: number;
-  totalReviews: number;
-  isVerified: boolean;
+// User Management Types
+export type UserPreferences = {
+  notificationsEnabled: boolean;
+  emailNotifications: boolean;
+  preferredLanguage: string;
+  timezone: string;
+  receivePromotionalEmails: boolean;
+  notificationSettings: Record<string, unknown>;
+};
+
+export type UserProfile = {
+  id: string; // Stellar public key
+  email: string;
+  fullName: string | null;
+  profileImageUrl: string | null;
+  preferences: Record<string, unknown>;
+  emailVerified: boolean;
   isActive: boolean;
-  profileCreatedAt: string;
-  profileUpdatedAt: string;
-};
-
-export type ServiceCategory = {
-  id: string;
-  name: string;
-  description: string | null;
-  iconUrl: string | null;
-  isActive: boolean;
-  displayOrder: number;
-  createdAt: string;
-};
-
-export type ArtisanService = {
-  id: string;
-  artisanId: string;
-  categoryId: string;
-  name: string;
-  description: string | null;
-  basePrice: string; // Stroop amount as string
-  currency: string;
-  isAvailable: boolean;
-  estimatedDurationMinutes: number | null;
-  serviceDetails: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 };
 
-export type PortfolioItem = {
+export type ProfileImage = {
   id: string;
-  artisanId: string;
-  title: string;
-  description: string | null;
-  images: string[]; // Array of image URLs
-  category: string | null;
-  completionDate: string | null; // ISO date
-  projectUrl: string | null;
-  tags: string[];
-  isFeatured: boolean;
-  displayOrder: number;
+  userId: string;
+  imageUrl: string;
+  mimeType: string;
+  fileSize: number;
+  isCurrent: boolean;
   createdAt: string;
-  updatedAt: string;
 };
 
-export type WorkingHours = {
+export type AccountDeletionRequest = {
   id: string;
-  artisanId: string;
-  dayOfWeek: "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday";
-  startTime: string; // HH:MM format
-  endTime: string; // HH:MM format
-  isAvailable: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type SpecialHours = {
-  id: string;
-  artisanId: string;
-  type: "holiday" | "vacation" | "special_closure";
-  startDate: string; // ISO date
-  endDate: string; // ISO date
+  userId: string;
+  status: "pending" | "confirmed" | "completed" | "cancelled";
+  confirmationToken: string;
+  requestedAt: string;
+  confirmedAt: string | null;
+  completionAt: string | null;
+  expiresAt: string;
   reason: string | null;
-  createdAt: string;
-};
-
-export type ArtisanLocation = {
-  id: string;
-  artisanId: string;
-  locationName: string;
-  streetAddress: string;
-  city: string;
-  stateProvince: string;
-  postalCode: string;
-  country: string;
-  latitude: number | null;
-  longitude: number | null;
-  phoneNumber: string | null;
-  isPrimary: boolean;
-  isServiceLocation: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ArtisanReview = {
-  id: string;
-  artisanId: string;
-  customer: string; // Stellar public key
-  jobId: string | null;
-  rating: number; // 1-5
-  comment: string | null;
-  isVerifiedJob: boolean;
-  createdAt: string;
-};
-
-export type ArtisanCertification = {
-  id: string;
-  artisanId: string;
-  certificationName: string;
-  issuingOrganization: string;
-  issueDate: string; // ISO date
-  expiryDate: string | null; // ISO date
-  credentialUrl: string | null;
-  credentialId: string | null;
-  isVerified: boolean;
-  createdAt: string;
-};
-
-export type AvailabilitySlot = {
-  id: string;
-  artisanId: string;
-  startTime: string; // ISO timestamp
-  endTime: string; // ISO timestamp
-  status: "available" | "booked" | "blocked";
-  jobId: string | null;
-  createdAt: string;
 };

@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { config } from "./config.js";
 import { registerJobRoutes } from "./routes/jobs.js";
-import { registerEscrowPaymentRoutes } from "./routes/escrowPayment.js";
+import { registerUserRoutes } from "./routes/users.js";
 import { securityHeaders } from "./middleware/securityHeaders.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import { validateStellarPublicKey, validateContractId } from "./utils/validation.js";
@@ -79,7 +79,7 @@ export async function buildServer() {
   });
 
   await registerJobRoutes(app);
-  await registerEscrowPaymentRoutes(app);
+  await registerUserRoutes(app);
 
   return app;
 }

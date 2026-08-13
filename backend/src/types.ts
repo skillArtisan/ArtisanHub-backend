@@ -52,71 +52,46 @@ export type IdempotencyKey = {
   expiresAt: string;
 };
 
-export type EscrowStatus =
-  | "funding_pending"
-  | "funds_locked"
-  | "release_pending"
-  | "released"
-  | "refunded"
-  | "disputed";
+// User Management Types
+export type UserPreferences = {
+  notificationsEnabled: boolean;
+  emailNotifications: boolean;
+  preferredLanguage: string;
+  timezone: string;
+  receivePromotionalEmails: boolean;
+  notificationSettings: Record<string, unknown>;
+};
 
-export type PaymentEventType =
-  | "funding_initiated"
-  | "funds_locked"
-  | "release_initiated"
-  | "released"
-  | "refund_initiated"
-  | "refunded"
-  | "dispute_raised"
-  | "dispute_resolved"
-  | "transaction_failed"
-  | "idempotency_detected";
-
-export type EscrowState = {
-  jobId: string;
-  status: EscrowStatus;
-  contractTxHash: string | null;
-  fundingTxHash: string | null;
-  releaseTxHash: string | null;
-  refundTxHash: string | null;
-  amountStroops: string;
-  fundedAt: string | null;
-  lockedAt: string | null;
-  releaseInitiatedAt: string | null;
-  releasedAt: string | null;
-  refundedAt: string | null;
-  disputedAt: string | null;
-  contractResponse: string | null;
-  errorMessage: string | null;
+export type UserProfile = {
+  id: string; // Stellar public key
+  email: string;
+  fullName: string | null;
+  profileImageUrl: string | null;
+  preferences: Record<string, unknown>;
+  emailVerified: boolean;
+  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 };
 
-export type PaymentEvent = {
-  id: number;
-  jobId: string;
-  eventType: PaymentEventType;
-  status: "pending" | "completed" | "failed";
-  transactionHash: string | null;
-  fromWallet: string | null;
-  toWallet: string | null;
-  amountStroops: string | null;
-  metadata: Record<string, any> | null;
-  errorMessage: string | null;
-  initiatedBy: string;
-  ipAddress: string | null;
-  userAgent: string | null;
+export type ProfileImage = {
+  id: string;
+  userId: string;
+  imageUrl: string;
+  mimeType: string;
+  fileSize: number;
+  isCurrent: boolean;
   createdAt: string;
-  updatedAt: string;
 };
 
-export type PaymentIdempotencyKey = {
-  key: string;
-  jobId: string;
-  operation: "fund" | "lock" | "release" | "refund" | "dispute" | "resolve";
-  requestPayload: Record<string, any>;
-  responsePayload: Record<string, any> | null;
+export type AccountDeletionRequest = {
+  id: string;
+  userId: string;
+  status: "pending" | "confirmed" | "completed" | "cancelled";
+  confirmationToken: string;
+  requestedAt: string;
+  confirmedAt: string | null;
+  completionAt: string | null;
   expiresAt: string;
-  createdAt: string;
-  updatedAt: string;
+  reason: string | null;
 };

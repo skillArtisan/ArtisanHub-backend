@@ -6,7 +6,35 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPatterns=\"\\.test\\.ts$\" --runInBand",
+    "test:resolve": "node --experimental-vm-modules node_modules/jest/bin/jest.js --testPathPatterns=\"resolve\\.test\\.ts$\" --runInBand"
+  },
+  "jest": {
+    "preset": "ts-jest/presets/default-esm",
+    "testEnvironment": "node",
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
+    "moduleNameMapper": {
+      "^(\\.\\.?/.*)\\.js$": "$1"
+    },
+    "transform": {
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "tsconfig": {
+            "module": "ESNext",
+            "moduleResolution": "Bundler"
+          }
+        }
+      ]
+    },
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/dist/"
+    ]
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",
@@ -18,8 +46,11 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.14.10",
     "@types/pg": "^8.20.0",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.12",
     "tsx": "^4.19.0",
     "typescript": "^5.6.2"
   }

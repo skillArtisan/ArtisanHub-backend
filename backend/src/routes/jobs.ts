@@ -3,6 +3,7 @@ import { z } from "zod";
 import { jobService } from "../services/jobs.js";
 import { sorobanService } from "../services/soroban.js";
 import { horizonService } from "../services/horizon.js";
+import { auditTrail } from "../services/auditTrail.js";
 import { verifySignature } from "../utils/auth.js";
 import { validateStellarPublicKey } from "../utils/validation.js";
 import { createRateLimiter } from "../middleware/rateLimiter.js";
@@ -66,6 +67,10 @@ export async function registerJobRoutes(app: FastifyInstance) {
       
       try {
         const contract = await sorobanService.createJob(job);
+        if (contract.hash) {
+          await jobService.saveContractTxHash(job.jobId, contract.hash);
+          job.contractTxHash = contract.hash;
+        }
         return reply.code(201).send({ job, contract });
       } catch (contractError) {
         await jobService.deleteJob(job.jobId);
@@ -97,6 +102,10 @@ export async function registerJobRoutes(app: FastifyInstance) {
 
       try {
         const contract = await sorobanService.acceptJob(jobId, actor);
+        if (contract.hash) {
+          await jobService.saveContractTxHash(jobId, contract.hash);
+          job.contractTxHash = contract.hash;
+        }
         return { job, contract };
       } catch (contractError) {
         await jobService.setJobState(jobId, "Open");
@@ -129,6 +138,10 @@ export async function registerJobRoutes(app: FastifyInstance) {
 
       try {
         const contract = await sorobanService.confirmDone(jobId, actor);
+        if (contract.hash) {
+          await jobService.saveContractTxHash(jobId, contract.hash);
+          job.contractTxHash = contract.hash;
+        }
         return { job, contract };
       } catch (contractError) {
         // Database transaction committed, need manual rollback
@@ -162,6 +175,10 @@ export async function registerJobRoutes(app: FastifyInstance) {
 
       try {
         const contract = await sorobanService.raiseDispute(jobId, actor);
+        if (contract.hash) {
+          await jobService.saveContractTxHash(jobId, contract.hash);
+          job.contractTxHash = contract.hash;
+        }
         return { job, contract };
       } catch (contractError) {
         // Fix: Clear both state AND dispute_at timestamp on rollback
@@ -199,6 +216,10 @@ export async function registerJobRoutes(app: FastifyInstance) {
 
       try {
         const contract = await sorobanService.resolveDispute(jobId, mediator, favour);
+        if (contract.hash) {
+          await jobService.saveContractTxHash(jobId, contract.hash);
+          job.contractTxHash = contract.hash;
+        }
         return { job, contract };
       } catch (contractError) {
         // Database transaction committed, need manual rollback

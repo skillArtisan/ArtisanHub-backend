@@ -330,6 +330,14 @@ export const jobService = {
     });
   },
 
+  /**
+   * Persist the on-chain transaction hash against a job record.
+   * Called after a Soroban call succeeds so clients can look up the tx.
+   */
+  async saveContractTxHash(jobId: string, txHash: string) {
+    await db("jobs").where({ job_id: jobId }).update({ contract_tx_hash: txHash });
+  },
+
   async revertDisputeResolution(jobId: string, artisan: string, amount: string, favour: ResolveFavour) {
     await db.transaction(async (trx) => {
       await trx("jobs").where({ job_id: jobId }).update({ state: "Disputed" });

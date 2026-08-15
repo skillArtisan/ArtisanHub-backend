@@ -95,3 +95,145 @@ export type AccountDeletionRequest = {
   expiresAt: string;
   reason: string | null;
 };
+
+// Authentication Types
+export type RefreshToken = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  deviceId: string;
+  deviceName: string | null;
+  deviceType: string | null;
+  browser: string | null;
+  os: string | null;
+  ipAddress: string | null;
+  expiresAt: string;
+  lastUsedAt: string;
+  createdAt: string;
+  isRevoked: boolean;
+  revokedAt: string | null;
+};
+
+export type PasswordResetToken = {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  expiresAt: string;
+  createdAt: string;
+  isUsed: boolean;
+  usedAt: string | null;
+  ipAddress: string | null;
+};
+
+export type UserSession = {
+  id: string;
+  userId: string;
+  deviceId: string;
+  deviceName: string | null;
+  deviceType: string | null;
+  browser: string | null;
+  os: string | null;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+  lastActiveAt: string;
+  expiresAt: string;
+  isActive: boolean;
+  terminatedAt: string | null;
+};
+
+export type LoginAttempt = {
+  id: number;
+  userId: string | null;
+  email: string | null;
+  ipAddress: string;
+  successful: boolean;
+  failureReason: string | null;
+  userAgent: string | null;
+  attemptedAt: string;
+};
+
+export type BlacklistedToken = {
+  id: string;
+  tokenHash: string;
+  userId: string;
+  tokenType: "access" | "refresh";
+  expiresAt: string;
+  blacklistedAt: string;
+  reason: string | null;
+};
+
+export type AuthUser = {
+  userId: string;
+  email: string;
+  emailVerified: boolean;
+  isActive: boolean;
+};
+
+export type LoginResult = {
+  user: {
+    id: string;
+    email: string;
+    fullName: string | null;
+    emailVerified: boolean;
+  };
+  accessToken: string;
+  refreshToken: string;
+  session: {
+    id: string;
+    deviceId: string;
+    expiresAt: string;
+  };
+};
+
+export type TokenPayload = {
+  userId: string;
+  email: string;
+  type: "access" | "refresh";
+  deviceId?: string;
+  jti?: string;
+};
+
+export type DeviceInfo = {
+  deviceId: string;
+  deviceName?: string;
+  deviceType?: string;
+  browser?: string;
+  os?: string;
+  ipAddress?: string;
+  userAgent?: string;
+};
+
+export type SessionInfo = {
+  id: string;
+  userId: string;
+  deviceId: string;
+  deviceName?: string;
+  deviceType?: string;
+  browser?: string;
+  os?: string;
+  ipAddress?: string;
+  createdAt: string;
+  lastActiveAt: string;
+  expiresAt: string;
+  isActive: boolean;
+  isCurrent?: boolean;
+};
+
+export type PasswordResetRequest = {
+  success: boolean;
+  message: string;
+};
+
+export type PasswordResetVerification = {
+  valid: boolean;
+  message?: string;
+};
+
+export type LoginHistoryEntry = {
+  attemptedAt: string;
+  ipAddress: string;
+  successful: boolean;
+  failureReason: string | null;
+  userAgent: string | null;
+};

@@ -3,7 +3,8 @@ import { z } from "zod";
 import { userService } from "../services/users.js";
 import { verifySignature } from "../utils/auth.js";
 import { validateStellarPublicKey } from "../utils/validation.js";
-import { createRateLimiter } from "../middleware/rateLimiter.js";
+import { userModificationLimiter, deletionLimiter } from "../middleware/rateLimiter.js";
+import { authenticate, authenticateAndAuthorize } from "../middleware/authenticate.js";
 
 // Request schemas
 const createUserSchema = z.object({
@@ -16,14 +17,14 @@ const createUserSchema = z.object({
 const updateProfileSchema = z.object({
   fullName: z.string().optional(),
   email: z.string().email().optional(),
-  signature: z.string().min(1),
+  signature: z.string().min(1).optional(), // Optional for JWT auth
 });
 
 const uploadProfileImageSchema = z.object({
   imageUrl: z.string().url(),
   mimeType: z.enum(["image/jpeg", "image/png", "image/webp"]),
   fileSize: z.number().positive().max(5 * 1024 * 1024),
-  signature: z.string().min(1),
+  signature: z.string().min(1).optional(), // Optional for JWT auth
 });
 
 const updatePreferencesSchema = z.object({
@@ -33,7 +34,7 @@ const updatePreferencesSchema = z.object({
   timezone: z.string().optional(),
   receivePromotionalEmails: z.boolean().optional(),
   notificationSettings: z.record(z.unknown()).optional(),
-  signature: z.string().min(1),
+  signature: z.string().min(1).optional(), // Optional for JWT auth
 });
 
 const verifyEmailSchema = z.object({
@@ -42,24 +43,15 @@ const verifyEmailSchema = z.object({
 
 const requestDeletionSchema = z.object({
   reason: z.string().optional(),
-  signature: z.string().min(1),
+  signature: z.string().min(1).optional(), // Optional for JWT auth
 });
 
 const confirmDeletionSchema = z.object({
   token: z.string().min(1),
-  signature: z.string().min(1),
+  signature: z.string().min(1).optional(), // Optional for JWT auth
 });
 
-// Rate limiters
-const userModificationLimiter = createRateLimiter({
-  maxRequests: 10,
-  windowMs: 60_000,
-});
-
-const deletionLimiter = createRateLimiter({
-  maxRequests: 3,
-  windowMs: 3600_000, // 1 hour
-});
+// Note: Rate limiters are now imported from rateLimiter.ts
 
 export async function registerUserRoutes(app: FastifyInstance) {
   // Create user
@@ -99,7 +91,7 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Get user profile
+  // Get user profile - can be accessed by anyone (public profile)
   app.get<{ Params: { userId: string } }>(
     "/api/users/:userId",
     async (request, reply) => {
@@ -120,23 +112,33 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Update user profile
+  // Update user profile - requires JWT authentication
   app.put<{ Params: { userId: string }; Body: unknown }>(
     "/api/users/:userId",
-    { preHandler: userModificationLimiter },
+    { preHandler: [authenticate, userModificationLimiter] },
     async (request, reply) => {
       try {
         const { userId } = request.params;
         validateStellarPublicKey(userId);
 
+        // Check if user is updating their own profile
+        if (request.user?.userId !== userId) {
+          return reply.code(403).send({
+            error: "Forbidden",
+            message: "You can only update your own profile",
+          });
+        }
+
         const validated = updateProfileSchema.parse(request.body);
 
-        // Verify signature
-        const payload = `UPDATE_PROFILE:${userId}${validated.fullName ? `:${validated.fullName}` : ""}${validated.email ? `:${validated.email}` : ""}`;
-        if (!verifySignature(userId, payload, validated.signature)) {
-          return reply.code(401).send({
-            error: "Invalid signature",
-          });
+        // Verify signature (optional, for Stellar integration)
+        if (validated.signature) {
+          const payload = `UPDATE_PROFILE:${userId}${validated.fullName ? `:${validated.fullName}` : ""}${validated.email ? `:${validated.email}` : ""}`;
+          if (!verifySignature(userId, payload, validated.signature)) {
+            return reply.code(401).send({
+              error: "Invalid signature",
+            });
+          }
         }
 
         const user = await userService.updateProfile(userId, {
@@ -153,23 +155,33 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Upload profile image
+  // Upload profile image - requires JWT authentication
   app.post<{ Params: { userId: string }; Body: unknown }>(
     "/api/users/:userId/profile-image",
-    { preHandler: userModificationLimiter },
+    { preHandler: [authenticate, userModificationLimiter] },
     async (request, reply) => {
       try {
         const { userId } = request.params;
         validateStellarPublicKey(userId);
 
+        // Check if user is updating their own profile
+        if (request.user?.userId !== userId) {
+          return reply.code(403).send({
+            error: "Forbidden",
+            message: "You can only update your own profile image",
+          });
+        }
+
         const validated = uploadProfileImageSchema.parse(request.body);
 
-        // Verify signature
-        const payload = `UPLOAD_IMAGE:${userId}:${validated.imageUrl}:${validated.mimeType}:${validated.fileSize}`;
-        if (!verifySignature(userId, payload, validated.signature)) {
-          return reply.code(401).send({
-            error: "Invalid signature",
-          });
+        // Verify signature (optional, for Stellar integration)
+        if (validated.signature) {
+          const payload = `UPLOAD_IMAGE:${userId}:${validated.imageUrl}:${validated.mimeType}:${validated.fileSize}`;
+          if (!verifySignature(userId, payload, validated.signature)) {
+            return reply.code(401).send({
+              error: "Invalid signature",
+            });
+          }
         }
 
         const profileImage = await userService.uploadProfileImage(
@@ -212,13 +224,22 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Get user preferences
+  // Get user preferences - requires JWT authentication
   app.get<{ Params: { userId: string } }>(
     "/api/users/:userId/preferences",
+    { preHandler: authenticate },
     async (request, reply) => {
       try {
         const { userId } = request.params;
         validateStellarPublicKey(userId);
+
+        // Check if user is accessing their own preferences
+        if (request.user?.userId !== userId) {
+          return reply.code(403).send({
+            error: "Forbidden",
+            message: "You can only access your own preferences",
+          });
+        }
 
         const preferences = await userService.getPreferences(userId);
         if (!preferences) {
@@ -233,23 +254,33 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Update user preferences
+  // Update user preferences - requires JWT authentication
   app.put<{ Params: { userId: string }; Body: unknown }>(
     "/api/users/:userId/preferences",
-    { preHandler: userModificationLimiter },
+    { preHandler: [authenticate, userModificationLimiter] },
     async (request, reply) => {
       try {
         const { userId } = request.params;
         validateStellarPublicKey(userId);
 
+        // Check if user is updating their own preferences
+        if (request.user?.userId !== userId) {
+          return reply.code(403).send({
+            error: "Forbidden",
+            message: "You can only update your own preferences",
+          });
+        }
+
         const validated = updatePreferencesSchema.parse(request.body);
 
-        // Verify signature
-        const payload = `UPDATE_PREFERENCES:${userId}`;
-        if (!verifySignature(userId, payload, validated.signature)) {
-          return reply.code(401).send({
-            error: "Invalid signature",
-          });
+        // Verify signature (optional, for Stellar integration)
+        if (validated.signature) {
+          const payload = `UPDATE_PREFERENCES:${userId}`;
+          if (!verifySignature(userId, payload, validated.signature)) {
+            return reply.code(401).send({
+              error: "Invalid signature",
+            });
+          }
         }
 
         const preferences = await userService.updatePreferences(userId, {
@@ -315,30 +346,40 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Request account deletion
+  // Request account deletion - requires JWT authentication
   app.post<{ Params: { userId: string }; Body: unknown }>(
     "/api/users/:userId/request-deletion",
-    { preHandler: deletionLimiter },
+    { preHandler: [authenticate, deletionLimiter] },
     async (request, reply) => {
       try {
         const { userId } = request.params;
         validateStellarPublicKey(userId);
 
+        // Check if user is deleting their own account
+        if (request.user?.userId !== userId) {
+          return reply.code(403).send({
+            error: "Forbidden",
+            message: "You can only delete your own account",
+          });
+        }
+
         const validated = requestDeletionSchema.parse(request.body);
 
-        // Verify signature
-        const payload = `REQUEST_DELETE:${userId}${validated.reason ? `:${validated.reason}` : ""}`;
-        if (!verifySignature(userId, payload, validated.signature)) {
-          return reply.code(401).send({
-            error: "Invalid signature",
-          });
+        // Verify signature (optional, for Stellar integration)
+        if (validated.signature) {
+          const payload = `REQUEST_DELETE:${userId}${validated.reason ? `:${validated.reason}` : ""}`;
+          if (!verifySignature(userId, payload, validated.signature)) {
+            return reply.code(401).send({
+              error: "Invalid signature",
+            });
+          }
         }
 
         const deletionRequest = await userService.requestAccountDeletion(userId, validated.reason);
 
         return reply.code(202).send({
           deletionRequest,
-          message: `Account deletion requested. You have ${new Date(deletionRequest.expiresAt).toLocaleDateString()} to confirm deletion.`,
+          message: `Account deletion requested. You have until ${new Date(deletionRequest.expiresAt).toLocaleDateString()} to confirm deletion.`,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "unexpected error";
@@ -348,23 +389,33 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Confirm account deletion
+  // Confirm account deletion - requires JWT authentication
   app.post<{ Params: { userId: string }; Body: unknown }>(
     "/api/users/:userId/confirm-deletion",
-    { preHandler: deletionLimiter },
+    { preHandler: [authenticate, deletionLimiter] },
     async (request, reply) => {
       try {
         const { userId } = request.params;
         validateStellarPublicKey(userId);
 
+        // Check if user is confirming their own deletion
+        if (request.user?.userId !== userId) {
+          return reply.code(403).send({
+            error: "Forbidden",
+            message: "You can only confirm your own account deletion",
+          });
+        }
+
         const validated = confirmDeletionSchema.parse(request.body);
 
-        // Verify signature
-        const payload = `CONFIRM_DELETE:${userId}:${validated.token}`;
-        if (!verifySignature(userId, payload, validated.signature)) {
-          return reply.code(401).send({
-            error: "Invalid signature",
-          });
+        // Verify signature (optional, for Stellar integration)
+        if (validated.signature) {
+          const payload = `CONFIRM_DELETE:${userId}:${validated.token}`;
+          if (!verifySignature(userId, payload, validated.signature)) {
+            return reply.code(401).send({
+              error: "Invalid signature",
+            });
+          }
         }
 
         const deletionRequest = await userService.confirmAccountDeletion(userId, validated.token);
@@ -384,22 +435,33 @@ export async function registerUserRoutes(app: FastifyInstance) {
     }
   );
 
-  // Cancel account deletion
+  // Cancel account deletion - requires JWT authentication
   app.post<{ Params: { userId: string }; Body: unknown }>(
     "/api/users/:userId/cancel-deletion",
+    { preHandler: authenticate },
     async (request, reply) => {
       try {
         const { userId } = request.params;
         validateStellarPublicKey(userId);
 
-        const validated = z.object({ signature: z.string().min(1) }).parse(request.body);
-
-        // Verify signature
-        const payload = `CANCEL_DELETE:${userId}`;
-        if (!verifySignature(userId, payload, validated.signature)) {
-          return reply.code(401).send({
-            error: "Invalid signature",
+        // Check if user is cancelling their own deletion
+        if (request.user?.userId !== userId) {
+          return reply.code(403).send({
+            error: "Forbidden",
+            message: "You can only cancel your own account deletion",
           });
+        }
+
+        const validated = z.object({ signature: z.string().min(1).optional() }).parse(request.body);
+
+        // Verify signature (optional, for Stellar integration)
+        if (validated.signature) {
+          const payload = `CANCEL_DELETE:${userId}`;
+          if (!verifySignature(userId, payload, validated.signature)) {
+            return reply.code(401).send({
+              error: "Invalid signature",
+            });
+          }
         }
 
         await userService.cancelAccountDeletion(userId);
